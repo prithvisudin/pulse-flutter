@@ -117,7 +117,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: DropdownButtonFormField<String>(
-        value: value,
+        initialValue: value,
         dropdownColor: Colors.grey[900],
         style: TextStyle(color: Colors.white),
         decoration: InputDecoration(
@@ -135,13 +135,16 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   }
 
   Future<void> _submitProfile() async {
+    final heightCm = double.tryParse(_heightController.text) ?? 0.0;
+    final weightKg = double.tryParse(_weightController.text) ?? 0.0;
+
     setState(() => _isLoading = true);
 
     final profile = {
       'name': _nameController.text,
       'age': int.tryParse(_ageController.text) ?? 0,
-      'height_cm': double.tryParse(_heightController.text) ?? 0.0,
-      'weight_kg': double.tryParse(_weightController.text) ?? 0.0,
+      'height_cm': heightCm,
+      'weight_kg': weightKg,
       'goal': _selectedGoal,
       'sex': _selectedSex,
       'activity_level': _selectedActivity,
@@ -156,14 +159,19 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       );
 
       if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Profile saved! ID: ${data['id']}'),
-            backgroundColor: Colors.green,
+        final bmi = heightCm > 0 ? weightKg / ((heightCm / 100) * (heightCm / 100)) : 0.0;
+        if (!mounted) return;
+        Navigator.push(
+          context,
+          MaterialPageRoute(
+            builder: (context) => BMIResultScreen(
+              name: _nameController.text,
+              bmi: bmi,
+            ),
           ),
         );
       } else {
+        if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error: ${response.body}'),
@@ -172,6 +180,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         );
       }
     } catch (e) {
+      if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text('Could not connect to backend: $e'),
@@ -217,6 +226,95 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   : Text('Save Profile', style: TextStyle(fontSize: 18)),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class BMIResultScreen extends StatelessWidget {
+  final String name;
+  final double bmi;
+
+  const BMIResultScreen({super.key, required this.name, required this.bmi});
+
+  String get _classification {
+    if (bmi < 18.5) return 'Underweight';
+    if (bmi < 25.0) return 'Normal weight';
+    if (bmi < 30.0) return 'Overweight';
+    return 'Obese';
+  }
+
+  Color get _classificationColor {
+    if (bmi < 18.5) return Colors.blue;
+    if (bmi < 25.0) return Colors.green;
+    if (bmi < 30.0) return Colors.orange;
+    return Colors.red;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        backgroundColor: Colors.black,
+        iconTheme: IconThemeData(color: Colors.white),
+        title: Text('Your Results', style: TextStyle(color: Colors.white)),
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(32),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                'Hi, $name!',
+                style: TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.w600),
+              ),
+              SizedBox(height: 48),
+              Text(
+                'Your BMI',
+                style: TextStyle(color: Colors.grey, fontSize: 16),
+              ),
+              SizedBox(height: 12),
+              Text(
+                bmi.toStringAsFixed(1),
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 72,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              SizedBox(height: 16),
+              Container(
+                padding: EdgeInsets.symmetric(horizontal: 24, vertical: 10),
+                decoration: BoxDecoration(
+                  color: _classificationColor.withAlpha(40),
+                  border: Border.all(color: _classificationColor, width: 1.5),
+                  borderRadius: BorderRadius.circular(30),
+                ),
+                child: Text(
+                  _classification,
+                  style: TextStyle(
+                    color: _classificationColor,
+                    fontSize: 18,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              SizedBox(height: 64),
+              ElevatedButton(
+                onPressed: () => Navigator.popUntil(context, (route) => route.isFirst),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.deepPurple,
+                  foregroundColor: Colors.white,
+                  minimumSize: Size(double.infinity, 56),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: Text('Back to Home', style: TextStyle(fontSize: 18)),
+              ),
+            ],
+          ),
         ),
       ),
     );
