@@ -9,7 +9,7 @@ import 'dart:convert';
 
 String? _activeProfileId;
 Map<String, dynamic>? _activeProfile;
-const String _baseUrl = 'http://localhost:8000';
+const String _baseUrl = 'https://web-production-2514b.up.railway.app';
 
 const List<String> _workoutTypes = [
   'Push', 'Pull', 'Legs', 'Upper', 'Lower', 'Full Body', 'Rest', 'Custom',
