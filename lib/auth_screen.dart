@@ -14,6 +14,10 @@ class AuthScreen extends StatefulWidget {
   State<AuthScreen> createState() => _AuthScreenState();
 }
 
+/// Flip to true once the Google/Apple providers are enabled in the
+/// Supabase dashboard (Authentication -> Sign In/Providers).
+const bool _showOAuthProviders = false;
+
 class _AuthScreenState extends State<AuthScreen> {
   final _formKey = GlobalKey<FormState>();
   final _emailCtrl = TextEditingController();
@@ -270,37 +274,39 @@ class _AuthScreenState extends State<AuthScreen> {
                         style: const TextStyle(color: Color(0xFFA78BFA)),
                       ),
                     ),
-                    const SizedBox(height: 16),
-                    // Divider
-                    const Row(
-                      children: [
-                        Expanded(child: Divider(color: Color(0xFF2D2D3D))),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 12),
-                          child: Text('or continue with',
-                              style: TextStyle(
-                                  color: Color(0xFF5A5A6E), fontSize: 12)),
-                        ),
-                        Expanded(child: Divider(color: Color(0xFF2D2D3D))),
-                      ],
-                    ),
-                    const SizedBox(height: 16),
-                    _ProviderButton(
-                      label: 'Continue with Google',
-                      glyph: 'G',
-                      glyphColor: const Color(0xFF4285F4),
-                      onTap: _busy
-                          ? null
-                          : () => _signInWithProvider(OAuthProvider.google),
-                    ),
-                    const SizedBox(height: 12),
-                    _ProviderButton(
-                      label: 'Continue with Apple',
-                      icon: Icons.apple,
-                      onTap: _busy
-                          ? null
-                          : () => _signInWithProvider(OAuthProvider.apple),
-                    ),
+                    if (_showOAuthProviders) ...[
+                      const SizedBox(height: 16),
+                      // Divider
+                      const Row(
+                        children: [
+                          Expanded(child: Divider(color: Color(0xFF2D2D3D))),
+                          Padding(
+                            padding: EdgeInsets.symmetric(horizontal: 12),
+                            child: Text('or continue with',
+                                style: TextStyle(
+                                    color: Color(0xFF5A5A6E), fontSize: 12)),
+                          ),
+                          Expanded(child: Divider(color: Color(0xFF2D2D3D))),
+                        ],
+                      ),
+                      const SizedBox(height: 16),
+                      _ProviderButton(
+                        label: 'Continue with Google',
+                        glyph: 'G',
+                        glyphColor: const Color(0xFF4285F4),
+                        onTap: _busy
+                            ? null
+                            : () => _signInWithProvider(OAuthProvider.google),
+                      ),
+                      const SizedBox(height: 12),
+                      _ProviderButton(
+                        label: 'Continue with Apple',
+                        icon: Icons.apple,
+                        onTap: _busy
+                            ? null
+                            : () => _signInWithProvider(OAuthProvider.apple),
+                      ),
+                    ],
                   ],
                 ),
               ),
