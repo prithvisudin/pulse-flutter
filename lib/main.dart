@@ -12,7 +12,11 @@ import 'supabase_config.dart';
 
 String? _activeProfileId;
 Map<String, dynamic>? _activeProfile;
-const String _baseUrl = 'https://web-production-2514b.up.railway.app';
+// Override for local development with: --dart-define=PULSE_API=http://127.0.0.1:8000
+const String _baseUrl = String.fromEnvironment(
+  'PULSE_API',
+  defaultValue: 'https://web-production-2514b.up.railway.app',
+);
 
 const List<String> _workoutTypes = [
   'Push', 'Pull', 'Legs', 'Upper', 'Lower', 'Full Body', 'Rest', 'Custom',
