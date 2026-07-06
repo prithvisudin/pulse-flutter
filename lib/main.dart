@@ -2,6 +2,9 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:supabase_flutter/supabase_flutter.dart';
+import 'auth_screen.dart';
+import 'supabase_config.dart';
 
 // ---------------------------------------------------------------------------
 // Global state
@@ -19,7 +22,9 @@ const List<String> _dayNames = [
   'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday',
 ];
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await Supabase.initialize(url: supabaseUrl, publishableKey: supabaseAnonKey);
   runApp(const PulseApp());
 }
 
@@ -212,12 +217,128 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  void _onProfileCreated() => setState(() {});
+  StreamSubscription<AuthState>? _authSub;
+  bool _loadingProfile = false;
+  bool _needsOnboarding = false;
+  String? _loadError;
+
+  Session? get _session => Supabase.instance.client.auth.currentSession;
+
+  @override
+  void initState() {
+    super.initState();
+    _authSub = Supabase.instance.client.auth.onAuthStateChange.listen((state) {
+      if (!mounted) return;
+      if (state.event == AuthChangeEvent.signedOut) {
+        _activeProfileId = null;
+        _activeProfile = null;
+        setState(() {
+          _needsOnboarding = false;
+          _loadError = null;
+        });
+      } else if (state.session != null && _activeProfileId == null) {
+        _loadProfile(state.session!.user.id);
+      }
+    });
+    // Session restored from local storage (returning user) — load their data.
+    final session = _session;
+    if (session != null && _activeProfileId == null) {
+      _loadProfile(session.user.id);
+    }
+  }
+
+  @override
+  void dispose() {
+    _authSub?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _loadProfile(String userId) async {
+    if (_loadingProfile) return;
+    setState(() {
+      _loadingProfile = true;
+      _loadError = null;
+      _needsOnboarding = false;
+    });
+    try {
+      final r =
+          await http.get(Uri.parse('$_baseUrl/api/user/profile/$userId'));
+      if (!mounted) return;
+      if (r.statusCode == 200) {
+        _activeProfile = jsonDecode(r.body) as Map<String, dynamic>;
+        _activeProfileId = userId;
+        setState(() => _loadingProfile = false);
+      } else if (r.statusCode == 404) {
+        // Signed in but never set up a profile — send them to onboarding.
+        setState(() {
+          _loadingProfile = false;
+          _needsOnboarding = true;
+        });
+      } else {
+        setState(() {
+          _loadingProfile = false;
+          _loadError = 'Server error (${r.statusCode})';
+        });
+      }
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loadingProfile = false;
+        _loadError = 'Network error: $e';
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final session = _session;
+    if (session == null) {
+      return _SplashScreen(onSignedIn: () => setState(() {}));
+    }
+    if (_loadingProfile) {
+      return const Scaffold(
+        backgroundColor: Color(0xFF0A0A0F),
+        body: Center(child: CircularProgressIndicator(color: Color(0xFF7C3AED))),
+      );
+    }
+    if (_loadError != null) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF0A0A0F),
+        body: Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.cloud_off, color: Color(0xFF5A5A6E), size: 48),
+              const SizedBox(height: 16),
+              Text(_loadError!,
+                  style: const TextStyle(color: Color(0xFF8B8B9E))),
+              const SizedBox(height: 20),
+              FilledButton(
+                onPressed: () => _loadProfile(session.user.id),
+                child: const Text('Retry'),
+              ),
+              TextButton(
+                onPressed: () => Supabase.instance.client.auth.signOut(),
+                child: const Text('Sign out',
+                    style: TextStyle(color: Color(0xFF8B8B9E))),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    if (_needsOnboarding) {
+      return OnboardingScreen(
+        onDone: () => setState(() => _needsOnboarding = false),
+      );
+    }
     if (_activeProfileId == null) {
-      return _SplashScreen(onProfileCreated: _onProfileCreated);
+      // Session exists but profile hasn't been fetched yet (e.g. right after
+      // an OAuth redirect) — the auth listener will kick off the load.
+      return const Scaffold(
+        backgroundColor: Color(0xFF0A0A0F),
+        body: Center(child: CircularProgressIndicator(color: Color(0xFF7C3AED))),
+      );
     }
     return const _MainShell();
   }
@@ -228,8 +349,8 @@ class _HomeScreenState extends State<HomeScreen> {
 // ---------------------------------------------------------------------------
 
 class _SplashScreen extends StatelessWidget {
-  final VoidCallback onProfileCreated;
-  const _SplashScreen({required this.onProfileCreated});
+  final VoidCallback onSignedIn;
+  const _SplashScreen({required this.onSignedIn});
 
   @override
   Widget build(BuildContext context) {
@@ -331,9 +452,9 @@ class _SplashScreen extends StatelessWidget {
                     onTap: () async {
                       await Navigator.push(
                         context,
-                        MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+                        MaterialPageRoute(builder: (_) => const AuthScreen()),
                       );
-                      if (_activeProfileId != null) onProfileCreated();
+                      onSignedIn();
                     },
                   ),
                   const SizedBox(height: 32),
@@ -371,6 +492,7 @@ class _MainShellState extends State<_MainShell> {
           _WorkoutTab(),
           NutritionScreen(),
           CoachScreen(),
+          _ProfileTab(),
         ],
       ),
       bottomNavigationBar: Container(
@@ -396,8 +518,164 @@ class _MainShellState extends State<_MainShell> {
               selectedIcon: Icon(Icons.auto_awesome),
               label: 'Coach',
             ),
+            NavigationDestination(
+              icon: Icon(Icons.person_outline),
+              selectedIcon: Icon(Icons.person),
+              label: 'Profile',
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Profile Tab
+// ---------------------------------------------------------------------------
+
+class _ProfileTab extends StatefulWidget {
+  const _ProfileTab();
+
+  @override
+  State<_ProfileTab> createState() => _ProfileTabState();
+}
+
+class _ProfileTabState extends State<_ProfileTab> {
+  String _fmt(dynamic v) => v == null ? '—' : '$v';
+
+  @override
+  Widget build(BuildContext context) {
+    final user = Supabase.instance.client.auth.currentUser;
+    final profile = _activeProfile ?? {};
+    return Scaffold(
+      backgroundColor: const Color(0xFF0A0A0F),
+      appBar: AppBar(title: const Text('Profile')),
+      body: SafeArea(
+        child: ListView(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
+          children: [
+            // Account card
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF1A0A2E), Color(0xFF13131A)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFF2D1B60)),
+              ),
+              child: Row(
+                children: [
+                  Container(
+                    width: 52,
+                    height: 52,
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        colors: [Color(0xFF7C3AED), Color(0xFF4F46E5)],
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: const Icon(Icons.person, size: 28, color: Colors.white),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          _fmt(profile['name']),
+                          style: const TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: Colors.white),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          user?.email ?? 'Signed in',
+                          style: const TextStyle(
+                              color: Color(0xFF8B8B9E), fontSize: 13),
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            // Stats
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFF13131A),
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: const Color(0xFF1E1E2E)),
+              ),
+              child: Column(
+                children: [
+                  _statRow('Age', _fmt(profile['age'])),
+                  _statRow('Sex', _fmt(profile['sex'])),
+                  _statRow('Height', '${_fmt(profile['height_cm'])} cm'),
+                  _statRow('Weight', '${_fmt(profile['weight_kg'])} kg'),
+                  _statRow('Activity level', _fmt(profile['activity_level'])),
+                  _statRow('Goal', _fmt(profile['goal']), last: true),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            _GradientButton(
+              label: 'Edit Profile',
+              icon: Icons.edit_outlined,
+              onTap: () async {
+                await Navigator.push(
+                  context,
+                  MaterialPageRoute(builder: (_) => const OnboardingScreen()),
+                );
+                if (mounted) setState(() {});
+              },
+            ),
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 50,
+              child: OutlinedButton.icon(
+                onPressed: () async {
+                  await Supabase.instance.client.auth.signOut();
+                },
+                icon: const Icon(Icons.logout, color: Color(0xFFEF4444), size: 20),
+                label: const Text('Sign Out',
+                    style: TextStyle(
+                        color: Color(0xFFEF4444), fontWeight: FontWeight.w600)),
+                style: OutlinedButton.styleFrom(
+                  side: const BorderSide(color: Color(0xFF3D1E1E)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(16)),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _statRow(String label, String value, {bool last = false}) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 14),
+      decoration: BoxDecoration(
+        border: last
+            ? null
+            : const Border(
+                bottom: BorderSide(color: Color(0xFF1E1E2E), width: 1)),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: Color(0xFF8B8B9E))),
+          Text(value,
+              style: const TextStyle(
+                  color: Colors.white, fontWeight: FontWeight.w600)),
+        ],
       ),
     );
   }
@@ -3739,7 +4017,10 @@ class _WorkoutSummaryScreenState extends State<WorkoutSummaryScreen> {
 // ---------------------------------------------------------------------------
 
 class OnboardingScreen extends StatefulWidget {
-  const OnboardingScreen({super.key});
+  /// Called after the profile is saved when this screen is shown as the
+  /// post-sign-in setup step (not pushed). When null, the screen pops itself.
+  final VoidCallback? onDone;
+  const OnboardingScreen({super.key, this.onDone});
 
   @override
   State<OnboardingScreen> createState() => _OnboardingScreenState();
@@ -3758,6 +4039,22 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   bool _submitting = false;
 
   @override
+  void initState() {
+    super.initState();
+    // Editing an existing profile — prefill the form.
+    final p = _activeProfile;
+    if (p != null) {
+      _nameCtrl.text = (p['name'] ?? '').toString();
+      _ageCtrl.text = (p['age'] ?? '').toString();
+      _heightCtrl.text = (p['height_cm'] ?? '').toString();
+      _weightCtrl.text = (p['weight_kg'] ?? '').toString();
+      _sex = (p['sex'] as String?) ?? _sex;
+      _goal = (p['goal'] as String?) ?? _goal;
+      _activityLevel = (p['activity_level'] as String?) ?? _activityLevel;
+    }
+  }
+
+  @override
   void dispose() {
     _nameCtrl.dispose();
     _ageCtrl.dispose();
@@ -3770,7 +4067,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
     if (!(_formKey.currentState?.validate() ?? false)) return;
     setState(() => _submitting = true);
 
+    // Tie the profile row to the signed-in Supabase account so it can be
+    // restored on any device the user signs in from.
+    final authUserId = Supabase.instance.client.auth.currentUser?.id;
     final payload = {
+      if (authUserId != null) 'id': authUserId,
       'name': _nameCtrl.text.trim(),
       'age': int.parse(_ageCtrl.text.trim()),
       'sex': _sex,
@@ -3800,7 +4101,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
           'activity_level': _activityLevel,
           'goal': _goal,
         };
-        Navigator.pop(context);
+        if (widget.onDone != null) {
+          widget.onDone!();
+        } else {
+          Navigator.pop(context);
+        }
       } else {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Error: ${response.body}'), backgroundColor: Colors.red),
@@ -3869,7 +4174,17 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: const Color(0xFF0A0A0F),
-      appBar: AppBar(title: const Text('Create Profile')),
+      appBar: AppBar(
+        title: Text(widget.onDone != null ? 'Set Up Your Profile' : 'Edit Profile'),
+        actions: [
+          if (widget.onDone != null)
+            IconButton(
+              tooltip: 'Sign out',
+              icon: const Icon(Icons.logout, color: Color(0xFF8B8B9E)),
+              onPressed: () => Supabase.instance.client.auth.signOut(),
+            ),
+        ],
+      ),
       body: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),

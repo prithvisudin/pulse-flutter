@@ -43,3 +43,12 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Personal files — never commit
+*.docx
+*.pdf
+*.md
+!README.md
+!CLAUDE.md
+.claude/
+startup_jobs_june2026.md

@@ -26,19 +26,20 @@ flutter pub upgrade
 
 ## Architecture
 
-Pulse is a Flutter fitness-tracking app (Material 3, dark theme). The entire UI currently lives in a single file:
+Pulse is a Flutter fitness-tracking app (Material 3, dark theme) deployed to GitHub Pages (`https://prithvisudin.github.io/pulse-flutter/`, built by `.github/workflows/deploy.yml` on push to main).
 
-- **`lib/main.dart`** — `PulseApp` (app root) → `HomeScreen` (splash/landing) → `OnboardingScreen` (profile form)
+- **`lib/main.dart`** — almost all UI: `PulseApp` (root) → `HomeScreen` (auth/profile gate) → `_SplashScreen` (signed out) / `OnboardingScreen` (signed in, no profile) / `_MainShell` (4 tabs: Workout, Nutrition, Coach, Profile)
+- **`lib/auth_screen.dart`** — `AuthScreen`: email/password + Google + Apple sign-in via Supabase Auth
+- **`lib/supabase_config.dart`** — Supabase URL + anon/publishable key
 
-The app communicates with a local FastAPI backend at `http://127.0.0.1:8000`. The only wired endpoint is:
+Auth is Supabase Auth (`supabase_flutter`); sessions persist in local storage and are restored on launch. The signed-in user's auth UUID is used as the profile row id (`_activeProfileId`), which keys all workout/nutrition data.
 
-- `POST /api/user/profile` — submits the user profile collected during onboarding (name, age, height, weight, sex, goal, activity level)
+The app talks to a FastAPI backend (repo at `C:\Users\prith\pulse`, deployed on Railway at `https://web-production-2514b.up.railway.app`, `_baseUrl` in main.dart). The backend stores data in Supabase (Postgres) using the service-role key; the Flutter client only uses Supabase for auth, never direct DB access.
 
 ### Design conventions
 
-- Background: `Colors.black`; accent: `Colors.deepPurple`; text on dark: `Colors.white` / `Colors.grey`
+- Background: `Color(0xFF0A0A0F)`; surfaces: `0xFF13131A`; accent gradient: `0xFF7C3AED` → `0xFF4F46E5`; muted text: `0xFF8B8B9E`
 - All form inputs share `_buildTextField` / `_buildDropdown` helpers inside `_OnboardingScreenState`
-- The backend URL is hardcoded in `_submitProfile`; extract it to a constant or config before adding more endpoints
 
 ### Targets
 
