@@ -3,7 +3,9 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:supabase_flutter/supabase_flutter.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'auth_screen.dart';
+import 'macro_eval.dart';
 import 'supabase_config.dart';
 
 // ---------------------------------------------------------------------------
@@ -1424,6 +1426,9 @@ class Recipe {
   final double carbG;
   final double fatG;
   final String instructions;
+  final String? sourceUrl;
+  final String? sourcePlatform;
+  final String? sourceCreator;
 
   Recipe({
     required this.id,
@@ -1435,6 +1440,9 @@ class Recipe {
     required this.carbG,
     required this.fatG,
     this.instructions = '',
+    this.sourceUrl,
+    this.sourcePlatform,
+    this.sourceCreator,
   });
 
   factory Recipe.fromJson(Map<String, dynamic> j) => Recipe(
@@ -1447,6 +1455,9 @@ class Recipe {
         carbG: (j['carb_g'] as num?)?.toDouble() ?? 0,
         fatG: (j['fat_g'] as num?)?.toDouble() ?? 0,
         instructions: j['instructions'] as String? ?? '',
+        sourceUrl: j['source_url'] as String?,
+        sourcePlatform: j['source_platform'] as String?,
+        sourceCreator: j['source_creator'] as String?,
       );
 }
 
@@ -1679,6 +1690,15 @@ class _NutritionScreenState extends State<NutritionScreen> {
             const SizedBox(width: 10),
             Expanded(child: _macroBar('Fat', loggedF, targetF, const Color(0xFFD97706), '🥑')),
           ]),
+          const SizedBox(height: 14),
+          // ── Daily macro check — how today's log stacks up against the plan ──
+          if (loggedCal > 0)
+            _buildDayCheckCard(evaluateDay(
+              loggedCal: loggedCal.toDouble(), targetCal: targetCal.toDouble(),
+              loggedProtein: loggedP, targetProtein: targetP,
+              loggedFat: loggedF, targetFat: targetF,
+              goal: goal,
+            )),
           const SizedBox(height: 20),
           // ── AI recipe suggestions button ──
           GestureDetector(
@@ -1712,6 +1732,42 @@ class _NutritionScreenState extends State<NutritionScreen> {
       Text(value, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: color, height: 1)),
       Text(label, style: const TextStyle(color: Color(0xFF8B6DB0), fontSize: 12)),
     ]);
+  }
+
+  Widget _buildDayCheckCard(MacroEval eval) {
+    if (eval.rating == 'unknown') return const SizedBox.shrink();
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: const Color(0xFF13131A),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: eval.color.withValues(alpha: 0.35)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(Icons.insights_rounded, color: eval.color, size: 18),
+          const SizedBox(width: 8),
+          Text('MACRO CHECK', style: TextStyle(color: eval.color, fontSize: 10, letterSpacing: 2, fontWeight: FontWeight.w700)),
+          const Spacer(),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+            decoration: BoxDecoration(
+              color: eval.color.withValues(alpha: 0.15),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(eval.label, style: TextStyle(color: eval.color, fontSize: 12, fontWeight: FontWeight.w800)),
+          ),
+        ]),
+        const SizedBox(height: 10),
+        ...eval.reasons.map((reason) => Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('•  ', style: TextStyle(color: Color(0xFF5A5A6E), fontSize: 13)),
+                Expanded(child: Text(reason, style: const TextStyle(color: Color(0xFFCCCCDD), fontSize: 13, height: 1.35))),
+              ]),
+            )),
+      ]),
+    );
   }
 
   Widget _macroBar(String label, double logged, double target, Color color, String emoji) {
@@ -1817,24 +1873,68 @@ class _NutritionScreenState extends State<NutritionScreen> {
 
   // ── Recipes Tab ──────────────────────────────────────────────────────────────
 
+  String get _userGoal =>
+      (_plan?['goal'] as String?) ?? (_activeProfile?['goal'] as String?) ?? 'maintain';
+
   Widget _buildRecipesTab() {
-    if (_recipes.isEmpty) {
-      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('🍳', style: TextStyle(fontSize: 56)),
-        const SizedBox(height: 16),
-        const Text('No recipes yet', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700)),
-        const SizedBox(height: 6),
-        const Text('Tap + to add a recipe', style: TextStyle(color: Color(0xFF8B8B9E), fontSize: 14)),
-      ]));
-    }
-    return ListView.builder(
+    return ListView(
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
-      itemCount: _recipes.length,
-      itemBuilder: (_, i) => _buildRecipeCard(_recipes[i]),
+      children: [
+        _buildImportBanner(),
+        const SizedBox(height: 14),
+        if (_recipes.isEmpty)
+          const Padding(
+            padding: EdgeInsets.only(top: 60),
+            child: Column(children: [
+              Text('🍳', style: TextStyle(fontSize: 56)),
+              SizedBox(height: 16),
+              Text('No recipes yet', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w700)),
+              SizedBox(height: 6),
+              Text('Import one from a link above, or tap + to add manually',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Color(0xFF8B8B9E), fontSize: 14)),
+            ]),
+          )
+        else
+          ..._recipes.map(_buildRecipeCard),
+      ],
+    );
+  }
+
+  Widget _buildImportBanner() {
+    return GestureDetector(
+      onTap: () => _showImportDialog(context),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
+        decoration: BoxDecoration(
+          gradient: const LinearGradient(
+            colors: [Color(0xFF1A0A2E), Color(0xFF13131A)],
+            begin: Alignment.topLeft, end: Alignment.bottomRight,
+          ),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: const Color(0xFF2D1B60)),
+        ),
+        child: const Row(children: [
+          Icon(Icons.link_rounded, color: Color(0xFFA78BFA), size: 22),
+          SizedBox(width: 12),
+          Expanded(
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text('Import from a link',
+                  style: TextStyle(color: Colors.white, fontSize: 15, fontWeight: FontWeight.w700)),
+              SizedBox(height: 2),
+              Text('TikTok, Instagram, YouTube, or any recipe site',
+                  style: TextStyle(color: Color(0xFF8B8B9E), fontSize: 12)),
+            ]),
+          ),
+          Icon(Icons.chevron_right_rounded, color: Color(0xFF5A5A6E)),
+        ]),
+      ),
     );
   }
 
   Widget _buildRecipeCard(Recipe r) {
+    final eval = evaluateRecipeMacros(
+        r.caloriesPerServing.toDouble(), r.proteinG, r.carbG, r.fatG, _userGoal);
     return Padding(
       padding: const EdgeInsets.only(bottom: 14),
       child: Container(
@@ -1857,7 +1957,29 @@ class _NutritionScreenState extends State<NutritionScreen> {
               const SizedBox(height: 4),
               Text(r.description, style: const TextStyle(color: Color(0xFF8B8B9E), fontSize: 13)),
             ],
-            const SizedBox(height: 12),
+            const SizedBox(height: 10),
+            // Goal-aware macro-friendliness badge — tap for the reasons.
+            if (eval.rating != 'unknown')
+              GestureDetector(
+                onTap: () => _showEvalReasons(r.name, eval),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                  decoration: BoxDecoration(
+                    color: eval.color.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: eval.color.withValues(alpha: 0.4)),
+                  ),
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    Icon(Icons.insights_rounded, color: eval.color, size: 14),
+                    const SizedBox(width: 6),
+                    Text('${eval.score} · ${eval.label}',
+                        style: TextStyle(color: eval.color, fontSize: 12, fontWeight: FontWeight.w700)),
+                    const SizedBox(width: 4),
+                    Icon(Icons.info_outline, color: eval.color.withValues(alpha: 0.7), size: 12),
+                  ]),
+                ),
+              ),
+            const SizedBox(height: 10),
             Row(children: [
               _recipeStatChip('${r.caloriesPerServing} kcal', const Color(0xFF7C3AED)),
               const SizedBox(width: 8),
@@ -1867,6 +1989,29 @@ class _NutritionScreenState extends State<NutritionScreen> {
               const SizedBox(width: 8),
               _recipeStatChip('F ${r.fatG.round()}g', const Color(0xFFD97706)),
             ]),
+            if (r.sourceUrl != null || (r.sourceCreator ?? '').isNotEmpty) ...[
+              const SizedBox(height: 10),
+              GestureDetector(
+                onTap: r.sourceUrl != null
+                    ? () => launchUrl(Uri.parse(r.sourceUrl!), mode: LaunchMode.externalApplication)
+                    : null,
+                child: Row(children: [
+                  const Icon(Icons.open_in_new_rounded, color: Color(0xFF5A5A6E), size: 13),
+                  const SizedBox(width: 6),
+                  Flexible(
+                    child: Text(
+                      'From ${(r.sourceCreator ?? '').isNotEmpty ? r.sourceCreator : 'source'}'
+                      '${r.sourcePlatform != null ? ' on ${r.sourcePlatform}' : ''}',
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                          color: Color(0xFF8B8B9E), fontSize: 12,
+                          decoration: TextDecoration.underline,
+                          decorationColor: Color(0xFF5A5A6E)),
+                    ),
+                  ),
+                ]),
+              ),
+            ],
             const SizedBox(height: 14),
             _GradientButton(
               label: 'Log This Recipe',
@@ -1875,6 +2020,39 @@ class _NutritionScreenState extends State<NutritionScreen> {
             ),
           ]),
         ),
+      ),
+    );
+  }
+
+  void _showEvalReasons(String recipeName, MacroEval eval) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: const Color(0xFF13131A),
+      shape: const RoundedRectangleBorder(
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24))),
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(children: [
+            Icon(Icons.insights_rounded, color: eval.color, size: 20),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Text('${eval.label} · ${eval.score}/100',
+                  style: TextStyle(color: eval.color, fontSize: 17, fontWeight: FontWeight.w800)),
+            ),
+          ]),
+          const SizedBox(height: 6),
+          Text(recipeName, style: const TextStyle(color: Color(0xFF8B8B9E), fontSize: 13)),
+          const SizedBox(height: 16),
+          ...eval.reasons.map((reason) => Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  const Text('•  ', style: TextStyle(color: Color(0xFF8B8B9E))),
+                  Expanded(child: Text(reason, style: const TextStyle(color: Color(0xFFCCCCDD), fontSize: 14, height: 1.4))),
+                ]),
+              )),
+          const SizedBox(height: 8),
+        ]),
       ),
     );
   }
@@ -1919,11 +2097,14 @@ class _NutritionScreenState extends State<NutritionScreen> {
     );
   }
 
-  void _showAddRecipeSheet(BuildContext context) {
+  void _showAddRecipeSheet(BuildContext context,
+      {Map<String, dynamic>? draft, Map<String, dynamic>? importMeta}) {
     showModalBottomSheet(
       context: context, isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (_) => _AddRecipeSheet(
+        draft: draft,
+        importMeta: importMeta,
         onSave: (data) async {
           final id = _activeProfileId; if (id == null) return;
           try {
@@ -1936,6 +2117,103 @@ class _NutritionScreenState extends State<NutritionScreen> {
           } catch (_) {}
         },
       ),
+    );
+  }
+
+  void _showImportDialog(BuildContext context) {
+    final urlCtrl = TextEditingController();
+    bool importing = false;
+    String? error;
+    showDialog(
+      context: context,
+      builder: (dialogCtx) => StatefulBuilder(builder: (dialogCtx, ss) {
+        Future<void> doImport() async {
+          final url = urlCtrl.text.trim();
+          if (url.isEmpty) return;
+          ss(() { importing = true; error = null; });
+          try {
+            final r = await http.post(
+              Uri.parse('$_baseUrl/api/nutrition/recipes/import'),
+              headers: {'Content-Type': 'application/json'},
+              body: jsonEncode({'url': url, 'goal': _userGoal}),
+            );
+            if (!dialogCtx.mounted) return;
+            if (r.statusCode == 200) {
+              final data = jsonDecode(r.body) as Map<String, dynamic>;
+              Navigator.pop(dialogCtx);
+              _showAddRecipeSheet(
+                context,
+                draft: data['recipe'] as Map<String, dynamic>,
+                importMeta: {
+                  'source': data['source'],
+                  'ai': data['ai'],
+                  'evaluation': data['evaluation'],
+                },
+              );
+            } else {
+              String msg;
+              try {
+                msg = (jsonDecode(r.body) as Map<String, dynamic>)['detail'] as String? ?? 'Import failed (${r.statusCode})';
+              } catch (_) {
+                msg = 'Import failed (${r.statusCode})';
+              }
+              ss(() { importing = false; error = msg; });
+            }
+          } catch (e) {
+            if (dialogCtx.mounted) ss(() { importing = false; error = 'Network error — try again.'; });
+          }
+        }
+
+        return AlertDialog(
+          backgroundColor: const Color(0xFF13131A),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          title: const Text('Import Recipe',
+              style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.w800)),
+          content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text(
+              'Paste a link from TikTok, Instagram, YouTube, or a recipe website. '
+              'For videos, the recipe needs to be written in the caption.',
+              style: TextStyle(color: Color(0xFF8B8B9E), fontSize: 13, height: 1.4),
+            ),
+            const SizedBox(height: 14),
+            TextField(
+              controller: urlCtrl,
+              enabled: !importing,
+              autofocus: true,
+              style: const TextStyle(color: Colors.white, fontSize: 14),
+              decoration: const InputDecoration(
+                labelText: 'https://…',
+                prefixIcon: Icon(Icons.link_rounded, color: Color(0xFF5A5A6E)),
+              ),
+              onSubmitted: (_) => importing ? null : doImport(),
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 10),
+              Text(error!, style: const TextStyle(color: Color(0xFFEF4444), fontSize: 13)),
+            ],
+            if (importing) ...[
+              const SizedBox(height: 16),
+              const Row(children: [
+                SizedBox(width: 18, height: 18,
+                    child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF7C3AED))),
+                SizedBox(width: 12),
+                Text('Extracting recipe…', style: TextStyle(color: Color(0xFF8B8B9E), fontSize: 13)),
+              ]),
+            ],
+          ]),
+          actions: [
+            TextButton(
+              onPressed: importing ? null : () => Navigator.pop(dialogCtx),
+              child: const Text('Cancel', style: TextStyle(color: Color(0xFF8B8B9E))),
+            ),
+            TextButton(
+              onPressed: importing ? null : doImport,
+              child: const Text('Import',
+                  style: TextStyle(color: Color(0xFFA78BFA), fontWeight: FontWeight.w700)),
+            ),
+          ],
+        );
+      }),
     );
   }
 
@@ -2195,7 +2473,14 @@ class _AddFoodSheetState extends State<_AddFoodSheet> {
 
 class _AddRecipeSheet extends StatefulWidget {
   final Future<void> Function(Map<String, dynamic>) onSave;
-  const _AddRecipeSheet({required this.onSave});
+
+  /// Prefilled recipe fields when reviewing an imported recipe.
+  final Map<String, dynamic>? draft;
+
+  /// {source: {platform, creator, url}, ai: {...}, evaluation: {...}} for imports.
+  final Map<String, dynamic>? importMeta;
+
+  const _AddRecipeSheet({required this.onSave, this.draft, this.importMeta});
   @override
   State<_AddRecipeSheet> createState() => _AddRecipeSheetState();
 }
@@ -2210,6 +2495,28 @@ class _AddRecipeSheetState extends State<_AddRecipeSheet> {
   final _instructions = TextEditingController();
   int _servings = 1;
   bool _saving = false;
+  List<dynamic> _ingredients = [];
+  List<dynamic> _tags = [];
+
+  bool get _isImport => widget.draft != null;
+
+  @override
+  void initState() {
+    super.initState();
+    final d = widget.draft;
+    if (d != null) {
+      _name.text = (d['name'] ?? '').toString();
+      _desc.text = (d['description'] ?? '').toString();
+      _servings = (d['servings'] as num?)?.toInt() ?? 1;
+      _cal.text = '${(d['calories_per_serving'] as num?)?.toInt() ?? 0}';
+      _prot.text = '${(d['protein_g'] as num?)?.toDouble() ?? 0}';
+      _carb.text = '${(d['carb_g'] as num?)?.toDouble() ?? 0}';
+      _fat.text = '${(d['fat_g'] as num?)?.toDouble() ?? 0}';
+      _instructions.text = (d['instructions'] ?? '').toString();
+      _ingredients = (d['ingredients'] as List?) ?? [];
+      _tags = (d['tags'] as List?) ?? [];
+    }
+  }
 
   @override
   void dispose() { _name.dispose(); _desc.dispose(); _cal.dispose(); _prot.dispose(); _carb.dispose(); _fat.dispose(); _instructions.dispose(); super.dispose(); }
@@ -2217,6 +2524,7 @@ class _AddRecipeSheetState extends State<_AddRecipeSheet> {
   Future<void> _save() async {
     if (_name.text.trim().isEmpty || _cal.text.trim().isEmpty) return;
     setState(() => _saving = true);
+    final source = widget.importMeta?['source'] as Map<String, dynamic>?;
     await widget.onSave({
       'name': _name.text.trim(),
       'description': _desc.text.trim(),
@@ -2226,10 +2534,54 @@ class _AddRecipeSheetState extends State<_AddRecipeSheet> {
       'carb_g': double.tryParse(_carb.text.trim()) ?? 0,
       'fat_g': double.tryParse(_fat.text.trim()) ?? 0,
       'instructions': _instructions.text.trim(),
-      'ingredients': [],
-      'tags': [],
+      'ingredients': _ingredients,
+      'tags': _tags,
+      if (source != null) 'source_url': source['url'],
+      if (source != null) 'source_platform': source['platform'],
+      if (source != null && (source['creator'] ?? '').toString().isNotEmpty)
+        'source_creator': source['creator'],
     });
     if (mounted) Navigator.pop(context);
+  }
+
+  Widget _importBanner() {
+    final ai = widget.importMeta?['ai'] as Map<String, dynamic>?;
+    final source = widget.importMeta?['source'] as Map<String, dynamic>?;
+    final warnings = (ai?['warnings'] as List?)?.cast<String>() ?? [];
+    final aiUsed = ai?['used'] == true;
+    return Container(
+      padding: const EdgeInsets.all(12),
+      margin: const EdgeInsets.only(bottom: 14),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1A0A2E),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFF2D1B60)),
+      ),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(children: [
+          Icon(aiUsed ? Icons.auto_awesome : Icons.fact_check_outlined,
+              color: const Color(0xFFA78BFA), size: 16),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              aiUsed
+                  ? 'AI-extracted — check everything before saving'
+                  : 'Imported from the site\'s published recipe data',
+              style: const TextStyle(color: Color(0xFFC4B5FD), fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+        ]),
+        if ((source?['creator'] ?? '').toString().isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Text('Source: ${source!['creator']} on ${source['platform']}',
+              style: const TextStyle(color: Color(0xFF8B8B9E), fontSize: 11)),
+        ],
+        ...warnings.take(3).map((w) => Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text('• $w', style: const TextStyle(color: Color(0xFFD97706), fontSize: 11, height: 1.3)),
+            )),
+      ]),
+    );
   }
 
   @override
@@ -2241,8 +2593,10 @@ class _AddRecipeSheetState extends State<_AddRecipeSheet> {
         padding: const EdgeInsets.fromLTRB(20, 20, 20, 24),
         constraints: BoxConstraints(maxHeight: MediaQuery.of(context).size.height * 0.85),
         child: SingleChildScrollView(child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          const Text('New Recipe', style: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
+          Text(_isImport ? 'Review Imported Recipe' : 'New Recipe',
+              style: const TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.w800)),
           const SizedBox(height: 16),
+          if (_isImport) _importBanner(),
           _field(_name, 'Recipe name'),
           const SizedBox(height: 10),
           _field(_desc, 'Description (optional)'),
@@ -2267,11 +2621,40 @@ class _AddRecipeSheetState extends State<_AddRecipeSheet> {
             Expanded(child: _field(_fat,  'Fat g',      type: const TextInputType.numberWithOptions(decimal: true))),
           ]),
           const SizedBox(height: 10),
-          _field(_instructions, 'Instructions (optional)', maxLines: 3),
+          if (_ingredients.isNotEmpty) ...[
+            const Text('INGREDIENTS', style: TextStyle(color: Color(0xFF5A5A6E), fontSize: 10, letterSpacing: 2, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 6),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1C1C27),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: const Color(0xFF2D2D3D)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: _ingredients.take(12).map((ing) {
+                  final m = ing as Map<String, dynamic>;
+                  final amount = (m['amount'] ?? '').toString();
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 3),
+                    child: Text(
+                      '• ${amount.isNotEmpty ? '$amount ' : ''}${m['name'] ?? ''}',
+                      style: const TextStyle(color: Color(0xFFCCCCDD), fontSize: 12, height: 1.3),
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+          _field(_instructions, _isImport ? 'Instructions' : 'Instructions (optional)', maxLines: _isImport ? 6 : 3),
           const SizedBox(height: 20),
           _saving
             ? const Center(child: CircularProgressIndicator(color: Color(0xFF7C3AED)))
-            : _GradientButton(label: 'Save Recipe', icon: Icons.save_outlined, large: true, onTap: _save),
+            : _GradientButton(
+                label: _isImport ? 'Looks Good — Save Recipe' : 'Save Recipe',
+                icon: Icons.save_outlined, large: true, onTap: _save),
         ])),
       ),
     );

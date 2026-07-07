@@ -37,3 +37,9 @@ create table if not exists recipes (
 );
 
 create index if not exists recipes_user_id on recipes (user_id);
+
+-- ── Migration 2026-07-07: recipe import attribution ──────────────────────────
+-- Imported recipes always link back to the original creator/post.
+alter table recipes add column if not exists source_url      text;
+alter table recipes add column if not exists source_platform text;
+alter table recipes add column if not exists source_creator  text;
